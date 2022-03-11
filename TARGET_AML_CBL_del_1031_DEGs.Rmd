@@ -1,0 +1,692 @@
+---
+title: "CBL Deletions DEGs"
+author: "Jenny Smith"
+date: "September 10, 2019"
+output: html_document
+---
+
+#Set-up 
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, 
+                      fig.align='center', fig.width = 10, fig.height = 10)
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2018.08.29_CBL_Exon8-9_Deletions/AAML1031/"))
+options(stringsAsFactors = FALSE,bitmapType = 'cairo', device='x11')
+grDevices::X11.options(type='cairo')
+```
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(readr)
+library(edgeR)
+library(DeGSEA)
+library(gridExtra)
+# library(Cairo)
+getwd()
+```
+
+
+#Raw Counts
+
+```{r}
+AML.NBM.only <- TRUE
+```
+
+```{r}
+rbd.cts <- read_csv(file.path(HOME,"0000.00.03_Expression_Matrices/TARGET_AML_0531_1031_Ribodepleted_RNAseq_dupGenesRemoved_FractionalCounts.csv"))
+
+if(AML.NBM.only){
+  #remove cell lines, MPN, flow sorted and replicate samples
+  rbd.cts <- rbd.cts[,-grep("Kas|MV4|MPN[0-9]|Sort|replicate", 
+                            colnames(rbd.cts), ignore.case = TRUE)]
+  #Set-rownames
+  rbd.cts <- column_to_rownames(rbd.cts, "X1")
+  
+  #change to only USI for colnames
+  colnames(rbd.cts) <- str_split_fixed(colnames(rbd.cts),  "\\.", 5)[,3]
+  
+
+}
+  
+dim(rbd.cts) #51573  1460
+head(rbd.cts[,1:5])
+```
+
+```{r}
+all.cts <- readRDS(file.path(PROJHOME,"0000.00.03_ExpressionMatrices","TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_Fractionalcounts.RDS"))
+
+dim(all.cts) #48230  2345
+head(all.cts[,1:5])
+```
+
+
+#ClinData
+
+See column CBL Ex8/9 Deletion for pos/neg patient status and Fusion Group column to control for fusion variable.
+
+```{r}
+CBL.del <- read.csv("AAML1031_CBL_deletions_for_DE.csv") %>% 
+  filter(!duplicated(USI)) #%>% #5 samples had duplicates. likely batch duplicates 
+  # filter(Predicted.Deletion == "exon 8 deletion")
+
+head(CBL.del) #195   8
+dim(CBL.del)
+table(CBL.del$CBL.Ex8.9.Deletion)
+# table(CBL.del$Fusion.Group)
+```
+
+```{r eval=FALSE, echo=FALSE}
+table(CBL.del$Predicted.Deletion, CBL.del$CBL.Ex8.9.Deletion)
+table(CBL.del$Fusion.Group, CBL.del$CBL.Ex8.9.Deletion)
+table(CBL.del$Fragment.analysis.Results, CBL.del$Predicted.Deletion)
+```
+
+
+```{r}
+dir(file.path(SCRIPTS,"survival_analysis"))
+source(file.path(SCRIPTS,"survival_analysis/Survplot_Functions_2018.10.24.r"))
+```
+
+
+```{r}
+dat <- filter(merged, Mutations.Category %in% c("WT1.mutation.", "WT1.mutation./CEBPA.mutation.",
+                                                "FLT3.ITD/WT1.mutation."," FLT3.ITD","FLT3.ITD/NPM.mutation.")) %>% 
+  filter(Primary.Fusion.CNV=="None")%>% 
+  filter(!is.na(OS.time..days.))
+
+dim(dat)
+table(dat$Mutations.Category)
+
+wt1.alone <- KM.plots(df=dat,group_vars = NULL, type="OS",
+                      covariate = "Mutations.Category",
+                      cohort = "1031",riskTable = FALSE)
+
+
+```
+
+```{r}
+ggsave(plot = arrangeGrob(grobs=c(wt1.alone$OS, wt1.alone$EFS), ncol = 2),
+       filename = "~/TARGET_AML_WT1_NoPrimaryFusions_KMplots.pdf", device = "pdf", height = 5, width = 10)
+```
+
+
+```{r}
+# merged <- read.csv(file.path(CDE,"Merged/TARGET_AML_0531_1031_merged_CDEs_9.4.19.csv"))
+merged <- read.csv(file.path(CDE,"Merged/TARGET_AML_0531_1031_merged_CDEs_2.12.20.csv"))
+
+merged <- merged %>% 
+  filter(!is.na(USI) | USI != "Unknown") %>% 
+  filter(Protocol=="AAML1031", Treatment.Arm != "Arm D") %>% #use 1031 only  
+  filter(USI %in% colnames(rbd.cts)) %>%
+  left_join(., dplyr::select(CBL.del,-Protocol,-Reg.), by="USI") %>%
+  mutate(CBL.Ex8.9.Deletion_validated=case_when(
+                          is.na(Predicted.Deletion) ~ "Unknown", 
+                          
+                          Predicted.Deletion == "exon 8/9 deletion" & 
+                            grepl("exon 8/9 deletion|more than one", Fragment.analysis.Results) ~ "exon 8/9 deletion",
+                          
+                          grepl("exon 8/9 deletion", Fragment.analysis.Results) ~ "exon 8/9 deletion",
+                         
+                          Predicted.Deletion == "exon 8 deletion" & 
+                            grepl("exon 8 deletion|more than one",Fragment.analysis.Results) ~ "exon 8 deletion",
+                         
+                          grepl("exon 8 deletion",Fragment.analysis.Results) ~ "exon 8 deletion",
+                           
+                          grepl("WT",Fragment.analysis.Results) | CBL.Ex8.9.Deletion == "negative" ~ "Negative",
+                          TRUE ~ "Unknown")) %>% #usign only those validated by molecular methods
+         
+ mutate(CBL.Ex8.9.Deletion_all=case_when(
+                          Predicted.Deletion == "exon 8/9 deletion" & 
+                            grepl("exon 8/9 deletion|more than one", Fragment.analysis.Results) ~ "exon 8/9 deletion",
+                          
+                          grepl("exon 8/9 deletion", Fragment.analysis.Results) ~ "exon 8/9 deletion",
+                         
+                          Predicted.Deletion == "exon 8 deletion" & 
+                            grepl("exon 8 deletion|more than one",Fragment.analysis.Results) ~ "exon 8 deletion",
+                         
+                          grepl("exon 8 deletion",Fragment.analysis.Results) ~ "exon 8 deletion",
+                           
+                          grepl("WT",Fragment.analysis.Results) | CBL.Ex8.9.Deletion == "negative" ~ "Negative",
+                          TRUE ~ "Negative")) %>% #K.Mungall screened all bioinformatically
+  
+  mutate_at(vars(c("Cytogenetic.Category.1",
+                   "Cytogenetic.Category.2",
+                   "SNVs","Rare.Fusions")), 
+            ~replace_na(.,replace = "Unknown")) %>%
+  
+  mutate(Covariates=case_when(
+    grepl("CBFB-MYH11", Primary.Fusion.CNV) | grepl("CBFB-MYH11", Additional.Fusions.CNV) ~ "CBFB-MYH11",
+    grepl("RUNX1-RUNX1T1", Primary.Fusion.CNV)| grepl("RUNX1-RUNX1T1", Additional.Fusions.CNV) ~ "RUNX1-RUNX1T1",
+    grepl("KMT2A", Primary.Fusion.CNV)|grepl("RUNX1-RUNX1T1", Primary.Fusion.CNV) ~ "KMT2A", 
+    TRUE ~ "Other")) %>% 
+  mutate(Covariates=factor(Covariates, 
+                           levels=c("Other", "CBFB-MYH11","RUNX1-RUNX1T1","KMT2A"))) %>%
+  
+  # mutate(Groups=ifelse(grepl("CBFB|RUNX1", Covariates), "CBF", as.character(Covariates))) %>%
+  filter(!grepl("exon 8 deletion",CBL.Ex8.9.Deletion_validated)) %>% #Remove all exon 8 deletions only! 
+  set_rownames(.$USI)
+
+
+
+dim(merged) #987  145
+head(merged[,1:5])
+```
+
+```{r}
+table(merged$CBL.Ex8.9.Deletion, useNA='ifany')
+table(merged$CBL.Ex8.9.Deletion_all, useNA='ifany')
+table(merged$CBL.Ex8.9.Deletion_validated)
+```
+
+```{r}
+table(merged$Covariates, merged$CBL.Ex8.9.Deletion_all,useNA='ifany')
+```
+
+```{r}
+# dir(file.path(TARGET,"SequencingDataMatrix"))
+manifest <- read.csv(file.path(TARGET,"SequencingDataMatrix","TARGET_AML_Ribodepleted_Master_Manifest_2.14.20.csv"))
+
+dim(manifest)
+table(manifest$Group)
+```
+
+
+
+#Perform Differential Expression
+
+## All comers (confirmed by qPCR/gene mapper)
+
+```{r message=FALSE}
+DEGs.CBL <- twoGroups_DEGs(expnData = rbd.cts,
+                           clinData = merged,
+                           col = "CBL.Ex8.9.Deletion_validated",
+                           ref = "Negative",
+                           anno = TRUE,
+                           SkipPlots = FALSE)
+
+
+summary(DEGs.CBL)
+```
+
+```{r}
+table(DEGs.CBL$phenovector)
+```
+
+```{r}
+DEGs.Val <- extract_DEGs(DEGs.CBL,anno = TRUE,geneLevel = TRUE)
+
+dim(DEGs.Val) #128 genes 
+# head(DEGs.Val)
+# tail(DEGs.Val)
+# write.csv(DEGs.Val,"TARGET_AML_CBL.del_E8-9_Validated_Samples_DEGs.csv", row.names = FALSE)
+```
+
+```{r}
+table(DEGs.Val$logFC > 1)
+```
+
+```{r fig.width=14}
+# png("CBL.del_E8-9_Validated_Samples_Heatmap.png", height = 10, width = 14,res=150,units="in" )
+draw(DEGs.CBL$Heatmap)
+# dev.off()
+```
+
+```{r fig.height=5, fig.width=10}
+# Cairo("CBL.del_E8-9_Validated_Samples_PCA_MDS.png", type="png", height = 4, width = 10, dpi=300,units="in")
+grid.arrange(grobs=list(extract_PCA(DEGs.CBL), extract_MDS(DEGs.CBL)), ncol=2 )
+# dev.off()
+```
+
+
+
+## All comers (RNAseq Only)
+
+```{r}
+DEGs.CBL.all <- twoGroups_DEGs(expnData = rbd.cts,
+                           clinData = merged,
+                           col = "CBL.Ex8.9.Deletion_all",
+                           ref = "Negative",
+                           anno = TRUE,
+                           SkipPlots = FALSE)
+```
+
+```{r}
+table(DEGs.CBL.all$phenovector)
+saveRDS(DEGs.CBL.all, "TARGET_AML_CBL_E8.9del_vs_OtherAMLs_DEGs.RDS")
+```
+
+```{r}
+CBL.all.df <- extract_DEGs(DEGs.CBL.all,anno=TRUE, geneLevel = TRUE)
+head(CBL.all.df[,1:5])
+dim(CBL.all.df) #340 genes
+# write.csv(CBL.all.df,"TARGET_AML_RBD_CBL_E8-9_Del_vs_otherAML_DEGs.csv", row.names = FALSE)
+```
+
+```{r}
+quantile(CBL.all.df$logFC)
+table(CBL.all.df$logFC > 1)
+```
+
+```{r fig.height=7}
+# png("TARGET_AML_RBD_CBL.del_E8-9_vs_OtherAML_Heatmap.png", height = 7, width = 13, res=300, units = "in")
+DEGs.CBL.all$Heatmap
+# dev.off()
+```
+
+```{r fig.height=5, fig.width=9}
+vplot <- volcano_plot(DEGs.CBL.all,cut.off=2.5)
+
+# Cairo("CBL.del_E8-9_vs_OtherAMLs_volcano.png", type="png", height = 5, width = 8, dpi=300,units="in")
+vplot$gg.volcano
+# dev.off()
+```
+
+```{r fig.height=5, fig.width=10}
+ # Cairo("CBL.del_E8-9_vs_OtherAMLs_PCA_MDS.png", type="png", height = 4, width = 10, dpi=300,units="in")
+grid.arrange(grobs=list(extract_PCA(DEGs.CBL.all),extract_MDS(DEGs.CBL.all)), ncol=2)
+# dev.off()
+```
+
+##Design with Cytogenetics Incorporated
+
+```{r}
+table(CBL.del$Fusion.Group) %>% 
+  as.data.frame() %>% 
+  arrange(desc(Freq)) %>% 
+  head()
+```
+
+```{r}
+subset <- merged[,c("USI","Covariates","CBL.Ex8.9.Deletion_all")]
+subset$CBL.Ex8.9.Deletion_all <- factor(subset$CBL.Ex8.9.Deletion_all,
+                                   levels=c("Negative","exon 8/9 deletion"))
+
+d <- model.matrix(~CBL.Ex8.9.Deletion_all+Covariates, data=subset)
+# colnames(d)[2] <- "CBL.Ex8.9."
+
+head(d)
+```
+
+```{r}
+dge <- DGEList(counts=rbd.cts[,rownames(merged)],samples = subset)
+
+keep.dge <- rowSums(cpm(dge) >= 1) >= max(2,(0.05*ncol(dge)))  
+dge <- dge[keep.dge,] 
+dge <- calcNormFactors(dge) #TMM Norm
+dge.norm <- voom(dge, d, plot = FALSE)
+dim(dge.norm) #19744   987
+```
+
+```{r}
+fit <- lmFit(dge.norm,d)
+fit2 <- eBayes(fit)
+```
+
+```{r}
+DE <- topTable(fit2, coef = 2, adjust.method = "BH", 
+               sort.by = "logFC", number=20000, p.value = 0.05, lfc=1)
+
+head(DE) #None
+```
+
+```{r}
+DE.RUNX1 <- topTable(fit2, coef = "CovariatesRUNX1-RUNX1T1", adjust.method = "BH", 
+               sort.by = "logFC", number=20000, p.value = 0.05, lfc=1)
+
+head(DE.RUNX1,n=10) #OK checks out. Similar to resulst of DE with RUNX1-RUNX1T1 vs Others in 1031. The issue is not in the design matrix being off. 
+
+
+# DE.CBFB
+# DE.KMT2A
+```
+
+
+##Within Cytogroups
+
+```{r}
+groups <- c("Other", "CBFB-MYH11","RUNX1-RUNX1T1","KMT2A")
+table(merged$Covariates, merged$CBL.Ex8.9.Deletion_all)
+```
+
+```{r message=FALSE}
+for (group in groups){
+  df <- merged[merged$Covariates == group,]
+  res <- paste0("DEGs.CBL_",gsub( "-","_", group))
+  print(res)
+  
+  temp <- twoGroups_DEGs(expnData = rbd.cts,
+                           clinData = df,
+                           col = "CBL.Ex8.9.Deletion_all",
+                           ref = "Negative",
+                           percent.cutoff = 0.05,
+                           anno = FALSE,
+                           SkipPlots = FALSE)
+
+  assign(res,value = temp)
+  print(c("done",group))
+  rm(temp)
+}
+```
+
+```{r}
+ls(pattern = "DEGs.CBL_")
+```
+
+```{r fig.height=4, fig.width=6}
+lapply(ls(pattern = "DEGs.CBL_"),
+       function(x) get(x)$PCA$pca_plot +
+         labs(subtitle = x))
+
+```
+
+
+### Inv(16)
+
+```{r}
+table(DEGs.CBL_CBFB_MYH11$phenovector)
+dim(DEGs.CBL_CBFB_MYH11$DE$Voom$E) #17,900    65
+DEGs.CBL_CBFB_MYH11$DE$DE
+```
+
+```{r fig.height=5, fig.width=7}
+# Cairo("Inv16_CBL.del_E8-9_PCA.png", type="png", height = 5, width = 7, units="in", dpi=150)
+DEGs.CBL_CBFB_MYH11$PCA$pca_plot 
+# dev.off()
+```
+
+```{r fig.height=5, fig.width=5}
+volcanoplot(DEGs.CBL_CBFB_MYH11$DE$eBayesFit) 
+abline(h=-log10(0.05), col="red")
+abline(v=c(-1,1), col="dark grey", lty=2)
+```
+
+```{r fig.height=5, fig.width=7}
+vplot.cbf <- volcano_plot(DEGs.CBL_CBFB_MYH11)
+# vplot.cbf$gg.volcano
+# head(vplot.cbf$data)
+dim(vplot.cbf$data) #18446     7
+```
+
+```{r}
+sig.Unadj <- vplot.cbf$data %>% 
+  filter(pValue < 0.05, abs(logFC) > 1) %>% #range(vplot.cbf$data$FDR) #0.5035271 0.9997721
+  arrange(pValue, desc(logFC))
+
+head(sig.Unadj)
+dim(sig.Unadj) #98 without sig FDR though...
+```
+
+
+### Others 
+
+```{r}
+table(DEGs.CBL_Other$phenovector)
+dim(DEGs.CBL_Other$DE$Voom$E) #19415    73
+head(DEGs.CBL_Other$DE$Voom$E[,1:5])
+```
+
+```{r}
+vplot.others <- volcano_plot(DEGs.CBL_Other)
+```
+
+```{r fig.height=5, fig.width=7}
+vplot.others$gg.volcano
+```
+
+```{r}
+range(vplot.others$data$FDR)
+
+others.unadj <- vplot.others$data %>% 
+  filter(pValue < 0.05, abs(logFC) > 0.98) %>%
+  arrange(pValue, desc(Gene))
+
+head(others.unadj)
+dim(others.unadj) #395   7
+```
+
+
+### KMT2A
+
+```{r}
+DEGs.CBL_KMT2A$phenovector
+```
+
+```{r}
+head(DEGs.CBL_KMT2A$DE$eBayesFit$coefficients)
+head(DEGs.CBL_KMT2A$DE$eBayesFit$p.value)
+```
+
+```{r}
+vplot.KMT2A <- volcano_plot(DEGs.CBL_KMT2A)
+```
+
+```{r fig.height=5, fig.width=7}
+vplot.KMT2A$gg.volcano
+```
+
+```{r}
+range(vplot.KMT2A$data$FDR)
+
+KMT2A.unadj <- vplot.KMT2A$data %>% 
+  filter(pValue < 0.05, abs(logFC) > 0.98) %>%
+  arrange(pValue, desc(logFC))
+
+head(KMT2A.unadj)
+dim(KMT2A.unadj)
+```
+
+
+#CBL Gene Expression
+
+```{r}
+library(ggpubr)
+```
+
+
+```{r}
+samples <- manifest %>%
+  filter(! Group %in% c("TMD","DS","MPN",
+                        "FlowSorted",
+                        "CellLine"), 
+         ! Time_point == "relapse",
+         #those without timepoint were cultured pt cells
+         ! Time_point == "AML",
+         !grepl("replicate", Sample)) %>%
+  left_join(., dplyr::select(merged,USI,matches("CBL")),
+            by="USI") %>% 
+  mutate_at(vars(matches("CBL")), 
+            ~ifelse(is.na(.),Group,.)) %>% 
+  mutate_at(vars(matches("CBL")), 
+            ~gsub("CD34_NBM", "CD34_PB", . )) %>%
+  set_rownames(.$Sample)
+  
+
+head(samples[,1:5])
+# table(samples$Group)
+# table(samples$Time_point)
+table(samples$CBL.Ex8.9.Deletion_all)
+```
+
+```{r}
+dge.all <- DGEList(counts=all.cts[,samples$Sample],
+                   samples = samples)
+
+keep.dge <- rowSums(cpm(dge.all) >= 1) >= max(2,(0.05*ncol(dge.all)))  
+dge.all <- dge.all[keep.dge,]
+dge.all <- calcNormFactors(dge.all) #TMM Norm
+
+log_TMMCPM <- cpm(dge.all,log = TRUE,normalized.lib.sizes = TRUE)
+TMMCPM <- cpm(dge.all,log = FALSE,normalized.lib.sizes = TRUE)
+
+TMMCPM["CBL",1:5]
+```
+
+
+```{r}
+dat <- tibble(Sample=colnames(log_TMMCPM),
+              log2_CPM=log_TMMCPM["CBL",]) %>%
+  bind_cols(., data.frame(CPM=TMMCPM["CBL",])) %>%
+  left_join(., dplyr::select(samples, Sample,contains("CBL"),
+                             Primary.Fusion.CNV),
+            by="Sample") %>%
+  filter(CBL.Ex8.9.Deletion_all != "AML") %>%
+  mutate(CBL_cooccuring=case_when(
+    grepl("KMT2A", Primary.Fusion.CNV) ~   "KMT2A",
+    CBL.Ex8.9.Deletion_all == "exon 8/9 deletion" ~ Primary.Fusion.CNV,
+    CBL.Ex8.9.Deletion_all == "Negative" &
+      grepl("RUNX1-RUNX1T1|GLIS2|NSD1|KDM5A|MYH11", Primary.Fusion.CNV) ~   Primary.Fusion.CNV,
+    TRUE ~ CBL.Ex8.9.Deletion_all )) %>%
+  mutate_at(vars(CBL.Ex8.9.Deletion_all),
+            ~factor(., levels=c("CD34_PB","NBM","Negative",
+                                "exon 8/9 deletion")))
+
+
+# head(dat)
+table(dat$CBL.Ex8.9.Deletion_all,useNA='ifany')
+# table(dat$CBL.Ex8.9.Deletion_all,dat$CBL_cooccuring)
+
+
+
+inv.16 <- dat %>% 
+  filter(Primary.Fusion.CNV == "CBFB-MYH11") %>% 
+  droplevels()
+
+# head(inv.16)
+```
+
+
+```{r}
+#Color codes
+cc <- colorCodes_aheatmap(df=dat[,c("CBL_cooccuring","CBL.Ex8.9.Deletion_all")] %>%
+                      as.data.frame(),
+                      random = T)
+cc$CBL_cooccuring["CBFB-MYH11"] <- "#4DAF4A"
+cc$CBL_cooccuring["CD34_NBM"] <- "black"
+```
+
+
+```{r}
+dat %>% 
+  filter(Primary.Fusion.CNV == "CBFB-MYH11") %>% 
+  group_by(Primary.Fusion.CNV, CBL.Ex8.9.Deletion_all) %>% 
+  summarise(N=n())
+```
+
+```{r fig.height=4, fig.width=7}
+
+labs <- c("exon 8/9 deletion"=expression(paste("CBL", Delta, "E8+9")),
+                            "Negative"="CBL wild-type",
+                            "NBM"="Normal Marrow", 
+                            "CD34_PB"="CD34+ PBMCs")
+
+CBL.violin <- ggplot(data=dat,
+       aes(x=CBL.Ex8.9.Deletion_all, y=log2_CPM, 
+           fill=CBL.Ex8.9.Deletion_all)) +
+  geom_jitter(aes(color=CBL.Ex8.9.Deletion_all),
+              # color="grey80",
+              shape=21,
+              size=2.5,
+              stroke=0.75,
+              alpha=0.5) +
+  # scale_color_brewer(type="qual", palette="Set1") +
+  # scale_fill_brewer(type="qual", palette="Paired") +
+  # scale_color_manual(values=c("FOO"="red1","CBFB-MYH11"="blue1")) +
+  # scale_color_manual(values=cc$CBL_cooccuring) +
+  
+  geom_violin(draw_quantiles = 0.5,alpha=0.6,size=1.15) +
+  theme_classic() +
+  labs(x="", title="CBL Gene Expression", y="Log2 Counts per Million") +
+  theme(plot.title = element_text(size=22),
+        axis.text = element_text(size=18, color="black"),
+        axis.title = element_text(size=18),
+        legend.text = element_text(size=18),
+        legend.position = "bottom",
+        legend.title = element_blank(),
+        plot.margin = margin(l=25, unit="mm")) +
+  stat_compare_means(
+    method.args = list(alternative="greater"),
+    method="wilcox.test",
+    # ref.group = "exon 8/9 deletion",
+    comparisons = list(c("exon 8/9 deletion", "Negative"),
+                       c("exon 8/9 deletion", "NBM"),
+                       c("exon 8/9 deletion", "CD34_PB")),
+    hide.ns=F,
+    label="p.format") +
+  scale_x_discrete(labels=labs) +
+  scale_fill_discrete(labels=labs) +
+  scale_color_discrete(labels=labs)
+
+CBL.violin
+# ggsave(filename = "TARGET_AML_CBL_Expression_Violinplot_5.12.20.pdf",
+#        plot = CBL.violin,device = "pdf",
+#        height=9, width = 12, units="in")
+
+
+```
+
+```{r}
+list(c("exon 8/9 deletion", "Negative"),
+                       c("exon 8/9 deletion", "NBM"),
+                       c("exon 8/9 deletion", "CD34_PB"))
+```
+
+```{r}
+w1 <- wilcox.test(log2_CPM ~ CBL.Ex8.9.Deletion_all, 
+                  data=dat[dat$CBL.Ex8.9.Deletion_all %in% c( "Negative","exon 8/9 deletion"),], 
+                  # alternative="two.sided",
+                  alternative="less", #factor levels differ?? 
+                  paired=FALSE, exact=F, correct=T)
+
+# summary(w1)
+w1
+```
+
+```{r fig.height=4, fig.width=8}
+dat.order <- arrange(dat,CBL.Ex8.9.Deletion_all, 
+                        desc(CPM)) %>% 
+                mutate(Order=row_number())
+
+inv.16.order <-  arrange(inv.16,CBL.Ex8.9.Deletion_all, 
+                        desc(CPM)) %>% 
+                mutate(Order=row_number())
+
+CBL.bar <- ggplot(data = inv.16.order,
+         aes(x=Order, y=CPM,
+             fill=CBL.Ex8.9.Deletion_all, 
+             color=CBL_cooccuring)) +
+      geom_bar(stat ="identity") +
+      scale_fill_brewer(type="qual",
+                      palette = "Paired",
+                      aesthetics = c("colour", "fill")) +
+  theme_classic() +
+  guides(color="none") +
+  theme(panel.background = element_rect(fill="white"),
+                # panel.grid.major = element_blank(),
+                # panel.grid.minor = element_blank(),
+                axis.text.x = element_blank(),
+                axis.text.y = element_text(size = 14, color = "black"),
+                axis.title = element_text(size = 14),
+                plot.margin = margin(r = 1, t=1, l=1,unit="cm"),
+                legend.position="bottom",
+        legend.title = element_blank()) +
+          labs(x="Patient", title="CBL Gene Expression")
+
+CBL.bar
+# ggsave(filename = "TARGET_AML_CBL_Expression_inv.16_barplot.pdf",
+#        plot = CBL.bar,device = "pdf")
+getwd()
+```
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
